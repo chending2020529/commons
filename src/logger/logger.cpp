@@ -24,7 +24,7 @@ std::string defaultFilePath()
   if (env_value != nullptr && env_value[0] != '\0') {
     return env_value;
   }
-  return "/tmp/ros2_shared.log";
+  return "/tmp/commons_shared.log";
 }
 
 LoggerOptions defaultOptions(const std::string & logger_name)

@@ -22,16 +22,19 @@ enum class RotationMode
 struct LoggerOptions
 {
   std::string logger_name{"ros2_shared_logger"};
-  std::string file_path{"/tmp/ros2_shared.log"};
+  std::string file_path{"/tmp/commons_shared.log"};
   std::string pattern{"[pid:%P tid:%t] [%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v"};
   spdlog::level::level_enum level{spdlog::level::info};
   spdlog::level::level_enum flush_level{spdlog::level::info};
   bool also_log_to_console{true};
   bool truncate_on_open{false};
-  RotationMode rotation_mode{RotationMode::None};
-  // 默认单个日志文件大小为 50MB，超过后切分到新日志文件。
+  RotationMode rotation_mode{RotationMode::DailyAndSize};
+  // 默认单个日志文件大小为 50MB，超过后自动切分到新日志文件。
   std::size_t max_file_size_bytes{50 * 1024 * 1024};
-  std::size_t max_files{30};
+  // 默认不限制日志文件个数，设置为 0 表示不按数量清理旧日志。
+  std::size_t max_files{0};
+  // 默认按 2 天保留日志，超过保留天数的旧日志会自动删除。
+  std::size_t retention_days{2};
 };
 
 std::shared_ptr<spdlog::logger> init(const std::string & logger_name);
@@ -67,7 +70,7 @@ inline std::shared_ptr<spdlog::logger> defaultLogger()
 #define LogError(...) Log(spdlog::level::err, __VA_ARGS__)
 #define LogCritical(...) Log(spdlog::level::critical, __VA_ARGS__)
 
-// 条件日志宏：只有当 `condition` 为真时才输出日志。
+// 条件日志宏：只有 condition 为真时才输出日志。
 #define LogWithLoggerIf(logger, condition, level, ...) \
   do { \
     if (condition) { \

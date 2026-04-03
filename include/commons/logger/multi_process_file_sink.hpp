@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -8,13 +8,13 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
-#include <cctype>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <vector>
 
 #include <spdlog/common.h>
@@ -34,7 +34,8 @@ public:
     truncate_on_open_(options.truncate_on_open),
     rotation_mode_(options.rotation_mode),
     max_file_size_bytes_(options.max_file_size_bytes),
-    max_files_(options.max_files)
+    max_files_(options.max_files),
+    retention_days_(options.retention_days)
   {
     openLockFile();
     if (truncate_on_open_) {
@@ -86,7 +87,7 @@ private:
 
   struct SessionMetadata
   {
-    std::string session_key;
+    std::string active_file_key;
     std::string day_key;
   };
 
@@ -109,9 +110,20 @@ private:
     std::tm tm_buf{};
     localtime_r(&now_time, &tm_buf);
 
-    char buffer[32];
+    const auto milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
+      now.time_since_epoch()) % 1000;
+
+    char buffer[40];
+    char millis_buffer[8];
     std::strftime(buffer, sizeof(buffer), "%Y-%m-%d_%H-%M-%S", &tm_buf);
-    return buffer;
+    std::snprintf(millis_buffer, sizeof(millis_buffer), "%03lld", static_cast<long long>(milliseconds.count()));
+    return std::string(buffer) + "_" + millis_buffer;
+  }
+
+  static std::chrono::system_clock::time_point toSystemClock(const std::filesystem::file_time_type & file_time)
+  {
+    const auto adjusted = file_time - std::filesystem::file_time_type::clock::now() + std::chrono::system_clock::now();
+    return std::chrono::time_point_cast<std::chrono::system_clock::duration>(adjusted);
   }
 
   bool useDailyRotation() const
@@ -124,42 +136,34 @@ private:
     return rotation_mode_ == RotationMode::Size || rotation_mode_ == RotationMode::DailyAndSize;
   }
 
-  std::filesystem::path buildRotatedPath(const std::string & session_key, std::size_t index) const
+  std::filesystem::path buildLogPath(const std::string & file_key) const
   {
     const auto parent = basePath().parent_path();
     const auto extension = basePath().extension().string().empty() ? std::string(".log") : basePath().extension().string();
-
-    std::string filename = session_key;
-    if (useSizeRotation() && index > 0) {
-      filename += "." + std::to_string(index);
-    }
-    filename += extension;
-
-    return parent / filename;
+    return parent / (file_key + extension);
   }
 
   std::filesystem::path resolveTargetPath(std::size_t incoming_size)
   {
-    const SessionMetadata session = resolveSessionMetadata();
-    auto session_files = matchingFilesForSession(session.session_key);
-    std::size_t max_index = 0;
+    SessionMetadata metadata = resolveSessionMetadata();
+    std::filesystem::path candidate = buildLogPath(metadata.active_file_key);
 
-    for (const auto & entry : session_files) {
-      max_index = std::max(max_index, extractIndex(entry.path.filename().string(), session.session_key));
-    }
-
-    std::filesystem::path candidate = buildRotatedPath(session.session_key, max_index);
     if (!useSizeRotation()) {
+      registerManagedFile(candidate);
       return candidate;
     }
 
     if (std::filesystem::exists(candidate)) {
       const auto size = std::filesystem::file_size(candidate);
       if (size + incoming_size > max_file_size_bytes_) {
-        candidate = buildRotatedPath(session.session_key, max_index + 1);
+        metadata.active_file_key = createUniqueFileKey();
+        metadata.day_key = currentDayKey();
+        writeSessionMetadata(metadata);
+        candidate = buildLogPath(metadata.active_file_key);
       }
     }
 
+    registerManagedFile(candidate);
     return candidate;
   }
 
@@ -168,21 +172,33 @@ private:
     SessionMetadata metadata = readSessionMetadata();
     const std::string day_key = currentDayKey();
 
-    bool need_new_session = metadata.session_key.empty();
+    bool need_new_session = metadata.active_file_key.empty();
     if (!need_new_session && useDailyRotation() && metadata.day_key != day_key) {
       need_new_session = true;
     }
-    if (!need_new_session && matchingFilesForSession(metadata.session_key).empty()) {
+    if (!need_new_session && !std::filesystem::exists(buildLogPath(metadata.active_file_key))) {
       need_new_session = true;
     }
 
     if (need_new_session) {
-      metadata.session_key = currentTimestampKey();
+      metadata.active_file_key = createUniqueFileKey();
       metadata.day_key = day_key;
       writeSessionMetadata(metadata);
+      registerManagedFile(buildLogPath(metadata.active_file_key));
     }
 
     return metadata;
+  }
+
+  std::string createUniqueFileKey() const
+  {
+    for (;;) {
+      const std::string candidate = currentTimestampKey();
+      if (!std::filesystem::exists(buildLogPath(candidate))) {
+        return candidate;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
   }
 
   SessionMetadata readSessionMetadata() const
@@ -193,7 +209,7 @@ private:
       return metadata;
     }
 
-    std::getline(input, metadata.session_key);
+    std::getline(input, metadata.active_file_key);
     std::getline(input, metadata.day_key);
     return metadata;
   }
@@ -204,101 +220,69 @@ private:
     if (!output.is_open()) {
       throwSpdlogError("failed to write session metadata");
     }
-    output << metadata.session_key << '\n' << metadata.day_key << '\n';
+    output << metadata.active_file_key << '\n' << metadata.day_key << '\n';
   }
 
   std::vector<ManagedFile> matchingFiles() const
   {
     std::vector<ManagedFile> files;
-    const auto parent = basePath().parent_path().empty() ? std::filesystem::path(".") : basePath().parent_path();
-    if (!std::filesystem::exists(parent)) {
+    std::ifstream input(manifestPath());
+    if (!input.is_open()) {
       return files;
     }
 
-    for (const auto & entry : std::filesystem::directory_iterator(parent)) {
-      if (!entry.is_regular_file()) {
+    std::vector<std::filesystem::path> unique_paths;
+    std::string line;
+    while (std::getline(input, line)) {
+      if (line.empty()) {
         continue;
       }
-      const auto filename = entry.path().filename().string();
-      if (!isManagedFile(filename)) {
+
+      const std::filesystem::path path(line);
+      if (std::find(unique_paths.begin(), unique_paths.end(), path) != unique_paths.end()) {
         continue;
       }
-      files.push_back({entry.path(), entry.last_write_time()});
+      unique_paths.push_back(path);
+
+      std::error_code ec;
+      if (!std::filesystem::exists(path, ec) || ec) {
+        continue;
+      }
+      files.push_back({path, std::filesystem::last_write_time(path, ec)});
+      if (ec) {
+        files.pop_back();
+      }
     }
 
     return files;
   }
 
-  std::vector<ManagedFile> matchingFilesForSession(const std::string & session_key) const
+  void registerManagedFile(const std::filesystem::path & path) const
   {
-    std::vector<ManagedFile> files;
-    for (const auto & file : matchingFiles()) {
-      if (extractSessionKey(file.path.filename().string()) == session_key) {
-        files.push_back(file);
-      }
+    auto files = matchingFiles();
+    const auto found = std::find_if(files.begin(), files.end(), [&](const ManagedFile & file) {
+      return file.path == path;
+    });
+    if (found != files.end()) {
+      return;
     }
-    return files;
+
+    std::ofstream output(manifestPath(), std::ios::app);
+    if (!output.is_open()) {
+      throwSpdlogError("failed to append manifest metadata");
+    }
+    output << path.string() << '\n';
   }
 
-  bool isManagedFile(const std::string & filename) const
+  void syncManagedFiles(const std::vector<ManagedFile> & files) const
   {
-    const std::string extension = basePath().extension().string().empty() ? std::string(".log") : basePath().extension().string();
-    if (filename.size() <= extension.size()) {
-      return false;
+    std::ofstream output(manifestPath(), std::ios::trunc);
+    if (!output.is_open()) {
+      throwSpdlogError("failed to rewrite manifest metadata");
     }
-    if (filename.substr(filename.size() - extension.size()) != extension) {
-      return false;
+    for (const auto & file : files) {
+      output << file.path.string() << '\n';
     }
-
-    std::string body = filename.substr(0, filename.size() - extension.size());
-    const auto suffix_pos = body.find_last_of('.');
-    if (suffix_pos != std::string::npos) {
-      const std::string suffix = body.substr(suffix_pos + 1);
-      if (!suffix.empty() && std::all_of(suffix.begin(), suffix.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
-        body = body.substr(0, suffix_pos);
-      }
-    }
-
-    return !body.empty();
-  }
-
-  std::string extractSessionKey(const std::string & filename) const
-  {
-    const std::string extension = basePath().extension().string().empty() ? std::string(".log") : basePath().extension().string();
-    if (filename.size() <= extension.size() || filename.substr(filename.size() - extension.size()) != extension) {
-      return {};
-    }
-
-    std::string body = filename.substr(0, filename.size() - extension.size());
-    const auto suffix_pos = body.find_last_of('.');
-    if (suffix_pos != std::string::npos) {
-      const std::string suffix = body.substr(suffix_pos + 1);
-      if (!suffix.empty() && std::all_of(suffix.begin(), suffix.end(), [](unsigned char ch) { return std::isdigit(ch) != 0; })) {
-        body = body.substr(0, suffix_pos);
-      }
-    }
-
-    return body;
-  }
-
-  std::size_t extractIndex(const std::string & filename, const std::string & session_key) const
-  {
-    const std::string extension = basePath().extension().string().empty() ? std::string(".log") : basePath().extension().string();
-    const std::string prefix = session_key;
-
-    if (filename == prefix + extension) {
-      return 0;
-    }
-    if (filename.rfind(prefix, 0) != 0) {
-      return 0;
-    }
-
-    const std::string suffix = filename.substr(prefix.size(), filename.size() - prefix.size() - extension.size());
-    if (suffix.empty() || suffix[0] != '.') {
-      return 0;
-    }
-
-    return static_cast<std::size_t>(std::stoul(suffix.substr(1)));
   }
 
   void writeFormatted(const spdlog::memory_buf_t & formatted)
@@ -326,35 +310,56 @@ private:
 
   void cleanupOldFiles()
   {
-    if (max_files_ == 0) {
-      return;
-    }
-
     auto files = matchingFiles();
-    if (files.size() <= max_files_) {
-      return;
+
+    if (retention_days_ > 0) {
+      const auto expiration_time = std::chrono::system_clock::now() - std::chrono::hours(24 * retention_days_);
+      for (auto it = files.begin(); it != files.end();) {
+        if (it->path == current_file_path_) {
+          ++it;
+          continue;
+        }
+
+        if (toSystemClock(it->modified_at) >= expiration_time) {
+          ++it;
+          continue;
+        }
+
+        std::error_code ec;
+        if (std::filesystem::remove(it->path, ec)) {
+          it = files.erase(it);
+        } else {
+          ++it;
+        }
+      }
     }
 
-    std::sort(files.begin(), files.end(), [](const ManagedFile & lhs, const ManagedFile & rhs) {
-      if (lhs.modified_at == rhs.modified_at) {
-        return lhs.path.string() < rhs.path.string();
-      }
-      return lhs.modified_at < rhs.modified_at;
-    });
+    if (max_files_ > 0 && files.size() > max_files_) {
+      std::sort(files.begin(), files.end(), [](const ManagedFile & lhs, const ManagedFile & rhs) {
+        if (lhs.modified_at == rhs.modified_at) {
+          return lhs.path.string() < rhs.path.string();
+        }
+        return lhs.modified_at < rhs.modified_at;
+      });
 
-    std::size_t remaining = files.size();
-    for (const auto & file : files) {
-      if (remaining <= max_files_) {
-        break;
-      }
-      if (file.path == current_file_path_) {
-        continue;
-      }
-      std::error_code ec;
-      if (std::filesystem::remove(file.path, ec)) {
-        --remaining;
+      std::size_t remaining = files.size();
+      for (auto it = files.begin(); it != files.end() && remaining > max_files_;) {
+        if (it->path == current_file_path_) {
+          ++it;
+          continue;
+        }
+
+        std::error_code ec;
+        if (std::filesystem::remove(it->path, ec)) {
+          it = files.erase(it);
+          --remaining;
+        } else {
+          ++it;
+        }
       }
     }
+
+    syncManagedFiles(files);
   }
 
   void truncateActiveFiles()
@@ -363,8 +368,17 @@ private:
       std::error_code ec;
       std::filesystem::remove(file.path, ec);
     }
+
+    SessionMetadata metadata = readSessionMetadata();
+    if (!metadata.active_file_key.empty()) {
+      std::error_code ec;
+      std::filesystem::remove(buildLogPath(metadata.active_file_key), ec);
+    }
+
     std::error_code metadata_ec;
     std::filesystem::remove(sessionMetadataPath(), metadata_ec);
+    std::error_code manifest_ec;
+    std::filesystem::remove(manifestPath(), manifest_ec);
   }
 
   void reopenFile(const std::filesystem::path & path)
@@ -423,6 +437,11 @@ private:
     return basePath().parent_path() / (basePath().filename().string() + ".session");
   }
 
+  std::filesystem::path manifestPath() const
+  {
+    return basePath().parent_path() / (basePath().filename().string() + ".files");
+  }
+
   const std::filesystem::path & basePath() const
   {
     return file_path_;
@@ -438,6 +457,7 @@ private:
   RotationMode rotation_mode_;
   std::size_t max_file_size_bytes_;
   std::size_t max_files_;
+  std::size_t retention_days_;
   int fd_{-1};
   int lock_fd_{-1};
   std::filesystem::path current_file_path_;
