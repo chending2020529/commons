@@ -13,28 +13,28 @@ namespace Logger
 
 enum class RotationMode
 {
-  None,
-  Size,
-  Daily,
-  DailyAndSize,
+    None,
+    Size,
+    Daily,
+    DailyAndSize,
 };
 
 struct LoggerOptions
 {
-  std::string logger_name{"ros2_shared_logger"};
-  std::string file_path{};
-  std::string file_name_prefix{};
-  std::string error_file_path{};
-  std::string error_file_name_prefix{"Error-"};
-  std::string pattern{"[pid:%P tid:%t] [%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v"};
-  spdlog::level::level_enum level{spdlog::level::info};
-  spdlog::level::level_enum flush_level{spdlog::level::info};
-  bool also_log_to_console{true};
-  bool truncate_on_open{false};
-  RotationMode rotation_mode{RotationMode::DailyAndSize};
-  std::size_t max_file_size_bytes{50 * 1024 * 1024};
-  std::size_t max_files{0};
-  std::size_t retention_days{2};
+    std::string logger_name{"ros2_shared_logger"};
+    std::string file_path{};
+    std::string file_name_prefix{};
+    std::string error_file_path{};
+    std::string error_file_name_prefix{"Error-"};
+    std::string pattern{"[pid:%P tid:%t] [%Y-%m-%d %H:%M:%S.%e] [%n] [%^%l%$] %v"};
+    spdlog::level::level_enum level{spdlog::level::info};
+    spdlog::level::level_enum flush_level{spdlog::level::info};
+    bool also_log_to_console{true};
+    bool truncate_on_open{false};
+    RotationMode rotation_mode{RotationMode::DailyAndSize};
+    std::size_t max_file_size_bytes{50 * 1024 * 1024};
+    std::size_t max_files{0};
+    std::size_t retention_days{2};
 };
 
 std::shared_ptr<spdlog::logger> init(const std::string & logger_name);
@@ -44,7 +44,7 @@ void shutdown();
 
 inline std::shared_ptr<spdlog::logger> defaultLogger()
 {
-  return get();
+    return get();
 }
 
 }  // namespace Logger
@@ -70,18 +70,18 @@ inline std::shared_ptr<spdlog::logger> defaultLogger()
 #define LogCritical(...) Log(spdlog::level::critical, __VA_ARGS__)
 
 #define LogWithLoggerIf(logger, condition, level, ...) \
-  do { \
-    if (condition) { \
-      (logger)->log(level, __VA_ARGS__); \
-    } \
-  } while (0)
+    do { \
+        if (condition) { \
+            (logger)->log(level, __VA_ARGS__); \
+        } \
+    } while (0)
 
 #define LogIf(condition, level, ...) \
-  do { \
-    if (condition) { \
-      ::Logger::defaultLogger()->log(level, __VA_ARGS__); \
-    } \
-  } while (0)
+    do { \
+        if (condition) { \
+            ::Logger::defaultLogger()->log(level, __VA_ARGS__); \
+        } \
+    } while (0)
 
 #define LogWithLoggerTraceIf(logger, condition, ...) LogWithLoggerIf(logger, condition, spdlog::level::trace, __VA_ARGS__)
 #define LogWithLoggerDebugIf(logger, condition, ...) LogWithLoggerIf(logger, condition, spdlog::level::debug, __VA_ARGS__)
@@ -98,20 +98,20 @@ inline std::shared_ptr<spdlog::logger> defaultLogger()
 #define LogCriticalIf(condition, ...) LogIf(condition, spdlog::level::critical, __VA_ARGS__)
 
 #define LogWithLoggerOnce(logger, level, ...) \
-  do { \
-    static std::atomic<bool> COMMONS_LOGGER_CONCAT(_commons_logger_once_, __LINE__){false}; \
-    if (!COMMONS_LOGGER_CONCAT(_commons_logger_once_, __LINE__).exchange(true)) { \
-      (logger)->log(level, __VA_ARGS__); \
-    } \
-  } while (0)
+    do { \
+        static std::atomic<bool> COMMONS_LOGGER_CONCAT(_commons_logger_once_, __LINE__){false}; \
+        if (!COMMONS_LOGGER_CONCAT(_commons_logger_once_, __LINE__).exchange(true)) { \
+            (logger)->log(level, __VA_ARGS__); \
+        } \
+    } while (0)
 
 #define LogOnce(level, ...) \
-  do { \
-    static std::atomic<bool> COMMONS_LOGGER_CONCAT(_commons_logger_once_, __LINE__){false}; \
-    if (!COMMONS_LOGGER_CONCAT(_commons_logger_once_, __LINE__).exchange(true)) { \
-      ::Logger::defaultLogger()->log(level, __VA_ARGS__); \
-    } \
-  } while (0)
+    do { \
+        static std::atomic<bool> COMMONS_LOGGER_CONCAT(_commons_logger_once_, __LINE__){false}; \
+        if (!COMMONS_LOGGER_CONCAT(_commons_logger_once_, __LINE__).exchange(true)) { \
+            ::Logger::defaultLogger()->log(level, __VA_ARGS__); \
+        } \
+    } while (0)
 
 #define LogWithLoggerTraceOnce(logger, ...) LogWithLoggerOnce(logger, spdlog::level::trace, __VA_ARGS__)
 #define LogWithLoggerDebugOnce(logger, ...) LogWithLoggerOnce(logger, spdlog::level::debug, __VA_ARGS__)
