@@ -35,7 +35,8 @@ public:
     rotation_mode_(options.rotation_mode),
     max_file_size_bytes_(options.max_file_size_bytes),
     max_files_(options.max_files),
-    retention_days_(options.retention_days)
+    retention_days_(options.retention_days),
+    file_name_prefix_(options.file_name_prefix)
   {
     openLockFile();
     if (truncate_on_open_) {
@@ -140,7 +141,7 @@ private:
   {
     const auto parent = basePath().parent_path();
     const auto extension = basePath().extension().string().empty() ? std::string(".log") : basePath().extension().string();
-    return parent / (file_key + extension);
+    return parent / (file_name_prefix_ + file_key + extension);
   }
 
   std::filesystem::path resolveTargetPath(std::size_t incoming_size)
@@ -458,6 +459,7 @@ private:
   std::size_t max_file_size_bytes_;
   std::size_t max_files_;
   std::size_t retention_days_;
+  std::string file_name_prefix_;
   int fd_{-1};
   int lock_fd_{-1};
   std::filesystem::path current_file_path_;

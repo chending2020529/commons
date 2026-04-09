@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 #include <vector>
+#include <filesystem>
 
 #include <spdlog/sinks/stdout_color_sinks.h>
 #include <spdlog/spdlog.h>
@@ -27,11 +28,20 @@ std::string defaultFilePath()
   return "/tmp/commons_shared.log";
 }
 
+std::string defaultErrorFilePath(const std::string & file_path)
+{
+  const std::filesystem::path path(file_path);
+  const auto parent = path.parent_path();
+  const auto extension = path.extension().string().empty() ? std::string(".log") : path.extension().string();
+  return (parent / ("Error" + extension)).string();
+}
+
 LoggerOptions defaultOptions(const std::string & logger_name)
 {
   LoggerOptions options;
   options.logger_name = logger_name;
   options.file_path = defaultFilePath();
+  options.error_file_path = defaultErrorFilePath(options.file_path);
   options.rotation_mode = RotationMode::DailyAndSize;
   return options;
 }
@@ -42,12 +52,26 @@ std::shared_ptr<spdlog::logger> buildLogger(const LoggerOptions & options)
   if (resolved.file_path.empty()) {
     resolved.file_path = defaultFilePath();
   }
+  if (resolved.error_file_path.empty()) {
+    resolved.error_file_path = defaultErrorFilePath(resolved.file_path);
+  }
 
   std::vector<spdlog::sink_ptr> sinks;
-  sinks.push_back(std::make_shared<MultiProcessRollingFileSink>(resolved));
+  auto main_sink = std::make_shared<MultiProcessRollingFileSink>(resolved);
+  main_sink->set_level(spdlog::level::trace);
+  sinks.push_back(main_sink);
+
+  LoggerOptions error_options = resolved;
+  error_options.file_path = resolved.error_file_path;
+  error_options.file_name_prefix = resolved.error_file_name_prefix;
+  auto error_sink = std::make_shared<MultiProcessRollingFileSink>(error_options);
+  error_sink->set_level(spdlog::level::err);
+  sinks.push_back(error_sink);
 
   if (resolved.also_log_to_console) {
-    sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
+    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    console_sink->set_level(spdlog::level::trace);
+    sinks.push_back(console_sink);
   }
 
   auto logger = std::make_shared<spdlog::logger>(
