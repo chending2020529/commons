@@ -19,13 +19,26 @@ namespace
 std::mutex g_logger_mutex;
 std::shared_ptr<spdlog::logger> g_logger;
 
+std::filesystem::path defaultLogDirectory()
+{
+  const char * home_env = std::getenv("HOME");
+  std::filesystem::path home_path = (home_env != nullptr && home_env[0] != '\0')
+    ? std::filesystem::path(home_env)
+    : std::filesystem::current_path();
+
+  const auto robot_dir = home_path / ".robot";
+  const auto log_dir = robot_dir / "log";
+  std::filesystem::create_directories(log_dir);
+  return log_dir;
+}
+
 std::string defaultFilePath()
 {
   const char * env_value = std::getenv("ROS2_SHARED_LOG_FILE");
   if (env_value != nullptr && env_value[0] != '\0') {
     return env_value;
   }
-  return "/tmp/commons_shared.log";
+  return (defaultLogDirectory() / "commons_shared.log").string();
 }
 
 std::string defaultErrorFilePath(const std::string & file_path)

@@ -144,6 +144,18 @@ private:
     return parent / (file_name_prefix_ + file_key + extension);
   }
 
+  std::filesystem::path metadataDirectory() const
+  {
+    const auto directory = basePath().parent_path() / ".meta";
+    std::filesystem::create_directories(directory);
+    return directory;
+  }
+
+  std::string metadataBaseName() const
+  {
+    return basePath().stem().string().empty() ? std::string("logger") : basePath().stem().string();
+  }
+
   std::filesystem::path resolveTargetPath(std::size_t incoming_size)
   {
     SessionMetadata metadata = resolveSessionMetadata();
@@ -380,6 +392,8 @@ private:
     std::filesystem::remove(sessionMetadataPath(), metadata_ec);
     std::error_code manifest_ec;
     std::filesystem::remove(manifestPath(), manifest_ec);
+    std::error_code lock_ec;
+    std::filesystem::remove(lockFilePath(), lock_ec);
   }
 
   void reopenFile(const std::filesystem::path & path)
@@ -408,12 +422,9 @@ private:
 
   void openLockFile()
   {
-    const auto parent = basePath().parent_path();
-    if (!parent.empty()) {
-      std::filesystem::create_directories(parent);
-    }
-
+    const auto meta_dir = metadataDirectory();
     const auto path = lockFilePath();
+    (void)meta_dir;
     lock_fd_ = ::open(path.c_str(), O_CREAT | O_WRONLY, 0644);
     if (lock_fd_ < 0) {
       throwSpdlogError(std::string("failed to open lock file: ") + std::strerror(errno));
@@ -430,17 +441,17 @@ private:
 
   std::filesystem::path lockFilePath() const
   {
-    return basePath().parent_path() / (basePath().filename().string() + ".lock");
+    return metadataDirectory() / (metadataBaseName() + ".lock");
   }
 
   std::filesystem::path sessionMetadataPath() const
   {
-    return basePath().parent_path() / (basePath().filename().string() + ".session");
+    return metadataDirectory() / (metadataBaseName() + ".session");
   }
 
   std::filesystem::path manifestPath() const
   {
-    return basePath().parent_path() / (basePath().filename().string() + ".files");
+    return metadataDirectory() / (metadataBaseName() + ".files");
   }
 
   const std::filesystem::path & basePath() const

@@ -22,7 +22,7 @@ enum class RotationMode
 struct LoggerOptions
 {
   std::string logger_name{"ros2_shared_logger"};
-  std::string file_path{"/tmp/commons_shared.log"};
+  std::string file_path{};
   std::string file_name_prefix{};
   std::string error_file_path{};
   std::string error_file_name_prefix{"Error-"};
