@@ -49,12 +49,15 @@ public:
 
 protected:
     void sink_it_(const spdlog::details::log_msg &msg) override {
-        spdlog::memory_buf_t formatted;
-        this->formatter_->format(msg, formatted);
-
         if (::flock(lock_fd_, LOCK_EX) != 0) {
             throwSpdlogError("failed to acquire rotation lock");
         }
+
+        spdlog::details::log_msg ordered_msg(msg);
+        ordered_msg.time = spdlog::log_clock::now();
+
+        spdlog::memory_buf_t formatted;
+        this->formatter_->format(ordered_msg, formatted);
 
         const std::filesystem::path target_path =
                 resolveTargetPath(formatted.size());
@@ -462,3 +465,4 @@ private:
 };
 
 } // namespace Logger
+
