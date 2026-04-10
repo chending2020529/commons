@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -54,7 +55,7 @@ protected:
         }
 
         spdlog::details::log_msg ordered_msg(msg);
-        ordered_msg.time = spdlog::log_clock::now();
+        ordered_msg.time = nextOrderedTime();
 
         spdlog::memory_buf_t formatted;
         this->formatter_->format(ordered_msg, formatted);
@@ -125,6 +126,20 @@ private:
                                                     std::chrono::system_clock::now();
         return std::chrono::time_point_cast<std::chrono::system_clock::duration>(
                 adjusted);
+    }
+
+    static std::int64_t
+    toNanosecondsSinceEpoch(const spdlog::log_clock::time_point &time_point) {
+        return std::chrono::duration_cast<std::chrono::nanoseconds>(
+                time_point.time_since_epoch())
+                .count();
+    }
+
+    static spdlog::log_clock::time_point
+    fromNanosecondsSinceEpoch(std::int64_t nanoseconds_since_epoch) {
+        return spdlog::log_clock::time_point(std::chrono::duration_cast<
+                spdlog::log_clock::duration>(std::chrono::nanoseconds(
+                nanoseconds_since_epoch)));
     }
 
     bool useDailyRotation() const {
@@ -294,6 +309,61 @@ private:
         }
     }
 
+    spdlog::log_clock::time_point nextOrderedTime() {
+        auto candidate = spdlog::log_clock::now();
+        const auto last_assigned = readLastAssignedTime();
+        if (candidate <= last_assigned) {
+            candidate = last_assigned + std::chrono::microseconds(1);
+        }
+        writeLastAssignedTime(candidate);
+        return candidate;
+    }
+
+    spdlog::log_clock::time_point readLastAssignedTime() const {
+        if (::lseek(lock_fd_, 0, SEEK_SET) < 0) {
+            throwSpdlogError("failed to seek lock file");
+        }
+
+        char buffer[64]{};
+        const auto bytes_read = ::read(lock_fd_, buffer, sizeof(buffer) - 1);
+        if (bytes_read < 0) {
+            throwSpdlogError(std::string("failed to read lock file: ") +
+                                             std::strerror(errno));
+        }
+        if (bytes_read == 0) {
+            return spdlog::log_clock::time_point{};
+        }
+
+        char *end = nullptr;
+        const auto value = std::strtoll(buffer, &end, 10);
+        if (end == buffer) {
+            return spdlog::log_clock::time_point{};
+        }
+
+        return fromNanosecondsSinceEpoch(value);
+    }
+
+    void writeLastAssignedTime(
+            const spdlog::log_clock::time_point &time_point) const {
+        const auto serialized =
+                std::to_string(toNanosecondsSinceEpoch(time_point));
+        if (::ftruncate(lock_fd_, 0) != 0) {
+            throwSpdlogError(std::string("failed to truncate lock file: ") +
+                                             std::strerror(errno));
+        }
+        if (::lseek(lock_fd_, 0, SEEK_SET) < 0) {
+            throwSpdlogError("failed to seek lock file");
+        }
+
+        const auto bytes_written =
+                ::write(lock_fd_, serialized.c_str(), serialized.size());
+        if (bytes_written < 0 ||
+                static_cast<std::size_t>(bytes_written) != serialized.size()) {
+            throwSpdlogError(std::string("failed to write lock file: ") +
+                                             std::strerror(errno));
+        }
+    }
+
     void writeFormatted(const spdlog::memory_buf_t &formatted) {
         if (::flock(fd_, LOCK_EX) != 0) {
             throwSpdlogError("failed to acquire file lock");
@@ -420,7 +490,7 @@ private:
         const auto meta_dir = metadataDirectory();
         const auto path = lockFilePath();
         (void)meta_dir;
-        lock_fd_ = ::open(path.c_str(), O_CREAT | O_WRONLY, 0644);
+        lock_fd_ = ::open(path.c_str(), O_CREAT | O_RDWR, 0644);
         if (lock_fd_ < 0) {
             throwSpdlogError(std::string("failed to open lock file: ") +
                                               std::strerror(errno));
